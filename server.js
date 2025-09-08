@@ -3,7 +3,6 @@ import cors from "cors";
 import morgan from "morgan";
 import { fetch as undiciFetch } from "undici";
 
-// Use global fetch if present (Node 18+), else Undici
 const fetchFn = globalThis.fetch ?? undiciFetch;
 
 // ----- Config -----
@@ -14,7 +13,7 @@ const SS_PASS = process.env.SS_PASS;
 const PROXY_KEY = process.env.PROXY_KEY;
 const PORT = process.env.PORT || 10000;
 
-// Whitelist and aliases
+// Whitelist
 const ALLOW_LIST = new Set([
   "applicants",
   "businesses",
@@ -27,8 +26,21 @@ const ALLOW_LIST = new Set([
   "offers",
   "projects"
 ]);
-const PATH_ALIASES = { applicants: "job/applicants" };
 
+// Candidate upstream paths for each logical resource (order matters)
+const PATH_FALLBACKS = {
+  applicants: [
+    "applicants",
+    "job/applicants",
+    "job/applications",
+    "applications",
+    "JobApplicants",
+    "job/JobApplicants",
+    "jobapplications"
+  ]
+};
+
+// ----- App -----
 const app = express();
 app.use(cors());
 app.use(morgan("tiny"));
@@ -86,18 +98,6 @@ async function getBearer() {
   return bearer;
 }
 
-function buildUrls(resource, id) {
-  const primary = id
-    ? `${SMARTSEARCH_BASE}/${resource}/${encodeURIComponent(id)}`
-    : `${SMARTSEARCH_BASE}/${resource}`;
-  const alias = PATH_ALIASES[resource]
-    ? (id
-        ? `${SMARTSEARCH_BASE}/${PATH_ALIASES[resource]}/${encodeURIComponent(id)}`
-        : `${SMARTSEARCH_BASE}/${PATH_ALIASES[resource]}`)
-    : null;
-  return [primary, alias];
-}
-
 function upstreamHeaders(b) {
   return {
     "X-API-KEY": SMARTSEARCH_API_KEY,
@@ -106,7 +106,37 @@ function upstreamHeaders(b) {
   };
 }
 
-// Debug auth
+// Build candidate URLs for a logical resource
+function buildCandidateUrls(resource, id) {
+  const candidates = PATH_FALLBACKS[resource] || [resource];
+  return candidates.map(p => {
+    const base = id ? `${SMARTSEARCH_BASE}/${p}/${encodeURIComponent(id)}` : `${SMARTSEARCH_BASE}/${p}`;
+    return new URL(base);
+  });
+}
+
+// Try each candidate URL until one returns 2xx
+async function tryCandidates(urls, headers, queryObj) {
+  const statuses = [];
+  let last = null;
+
+  for (const u of urls) {
+    // copy query params for each attempt
+    if (queryObj) {
+      for (const [k, v] of Object.entries(queryObj)) u.searchParams.set(k, v);
+    }
+    const r = await fetchFn(u.toString(), { method: "GET", headers });
+    const body = await r.text();
+    statuses.push(`${r.status}@${u.pathname}`);
+    if (r.ok) {
+      return { ok: true, url: u.toString(), status: r.status, body, contentType: r.headers.get("content-type") };
+    }
+    last = { url: u.toString(), status: r.status, body, contentType: r.headers.get("content-type") };
+  }
+  return { ok: false, statuses, last };
+}
+
+// ---- Debug: auth
 app.get("/debug/auth", async (_req, res) => {
   try {
     const b = await getBearer();
@@ -116,65 +146,76 @@ app.get("/debug/auth", async (_req, res) => {
   }
 });
 
-// ----- GET collection with non-2xx fallback -----
+// ---- Debug: service document (entity sets)
+app.get("/debug/service", async (_req, res) => {
+  try {
+    const b = await getBearer();
+    const r = await fetchFn(`${SMARTSEARCH_BASE}/`, { headers: upstreamHeaders(b) });
+    const t = await r.text();
+    res.status(r.status).type(r.headers.get("content-type") || "application/json").send(t);
+  } catch (e) {
+    res.status(500).json({ error: "Service doc fetch failed", detail: String(e) });
+  }
+});
+
+// ---- Debug: metadata (EDMX)
+app.get("/debug/metadata", async (_req, res) => {
+  try {
+    const b = await getBearer();
+    const r = await fetchFn(`${SMARTSEARCH_BASE}/$metadata`, {
+      headers: { ...upstreamHeaders(b), Accept: "application/xml" }
+    });
+    const t = await r.text();
+    res.status(r.status).type(r.headers.get("content-type") || "application/xml").send(t);
+  } catch (e) {
+    res.status(500).json({ error: "Metadata fetch failed", detail: String(e) });
+  }
+});
+
+// ----- GET collection with multi-path fallback -----
 app.get("/proxy/:resource", async (req, res) => {
   try {
     const { resource } = req.params;
     if (!ALLOW_LIST.has(resource)) return res.status(404).json({ error: "Resource not allowed" });
 
     const b = await getBearer();
-    const [u1, u2] = buildUrls(resource, null);
-    const url1 = new URL(u1);
-    const url2 = u2 ? new URL(u2) : null;
-    for (const [k, v] of Object.entries(req.query)) {
-      url1.searchParams.set(k, v);
-      if (url2) url2.searchParams.set(k, v);
-    }
+    const urls = buildCandidateUrls(resource, null);
+    const result = await tryCandidates(urls, upstreamHeaders(b), req.query);
 
-    let r = await fetchFn(url1.toString(), { method: "GET", headers: upstreamHeaders(b) });
-    let body = await r.text();
-    res.set("X-Proxy-Primary-URL", url1.toString());
-    res.set("X-Proxy-Primary-Status", String(r.status));
-
-    if (!r.ok && url2) {
-      // try alias on any non-2xx
-      r = await fetchFn(url2.toString(), { method: "GET", headers: upstreamHeaders(b) });
-      body = await r.text();
-      res.set("X-Proxy-Upstream", url2.toString());
+    res.set("X-Proxy-Candidates", urls.map(u => u.pathname).join(","));
+    if (result.ok) {
+      res.set("X-Proxy-Upstream", result.url);
+      return res.status(result.status).type(result.contentType || "application/json").send(result.body);
     } else {
-      res.set("X-Proxy-Upstream", url1.toString());
+      res.set("X-Proxy-Attempts", (result.statuses || []).join("|"));
+      res.set("X-Proxy-Upstream", result.last?.url || "");
+      return res.status(result.last?.status || 502).type(result.last?.contentType || "application/json").send(result.last?.body || "");
     }
-
-    return res.status(r.status).type(r.headers.get("content-type") || "application/json").send(body);
   } catch (e) {
     console.error("GET /proxy error:", e);
     return res.status(500).json({ error: "Proxy fetch failed", detail: String(e) });
   }
 });
 
-// ----- GET by id with non-2xx fallback -----
+// ----- GET by id with multi-path fallback -----
 app.get("/proxy/:resource/:id", async (req, res) => {
   try {
     const { resource, id } = req.params;
     if (!ALLOW_LIST.has(resource)) return res.status(404).json({ error: "Resource not allowed" });
 
     const b = await getBearer();
-    const [u1, u2] = buildUrls(resource, id);
+    const urls = buildCandidateUrls(resource, id);
+    const result = await tryCandidates(urls, upstreamHeaders(b));
 
-    let r = await fetchFn(u1.toString(), { method: "GET", headers: upstreamHeaders(b) });
-    let body = await r.text();
-    res.set("X-Proxy-Primary-URL", u1.toString());
-    res.set("X-Proxy-Primary-Status", String(r.status));
-
-    if (!r.ok && u2) {
-      r = await fetchFn(u2.toString(), { method: "GET", headers: upstreamHeaders(b) });
-      body = await r.text();
-      res.set("X-Proxy-Upstream", u2.toString());
+    res.set("X-Proxy-Candidates", urls.map(u => u.pathname).join(","));
+    if (result.ok) {
+      res.set("X-Proxy-Upstream", result.url);
+      return res.status(result.status).type(result.contentType || "application/json").send(result.body);
     } else {
-      res.set("X-Proxy-Upstream", u1.toString());
+      res.set("X-Proxy-Attempts", (result.statuses || []).join("|"));
+      res.set("X-Proxy-Upstream", result.last?.url || "");
+      return res.status(result.last?.status || 502).type(result.last?.contentType || "application/json").send(result.last?.body || "");
     }
-
-    return res.status(r.status).type(r.headers.get("content-type") || "application/json").send(body);
   } catch (e) {
     console.error("GET /proxy/:id error:", e);
     return res.status(500).json({ error: "Proxy fetch failed", detail: String(e) });
