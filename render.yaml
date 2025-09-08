@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: smartsearch-proxy
+    env: node
+    plan: free
+    runtime: node
+    region: oregon
+    buildCommand: "npm install"
+    startCommand: "npm start"
+    envVars:
+      - key: SMARTSEARCH_API_KEY
+        sync: false
+      - key: SMARTSEARCH_BASE
+        value: https://api2.smartsearchonline.com/openapi/v1
