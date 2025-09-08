@@ -1,14 +1,13 @@
 import express from "express";
 import cors from "cors";
 import morgan from "morgan";
-import fetch from "node-fetch";
 
 // ---------- Config ----------
 const SMARTSEARCH_BASE = process.env.SMARTSEARCH_BASE || "https://api2.smartsearchonline.com/openapi/v1";
 const SMARTSEARCH_API_KEY = process.env.SMARTSEARCH_API_KEY;
 const SS_USER = process.env.SS_USER;     // service account username
 const SS_PASS = process.env.SS_PASS;     // service account password
-const PROXY_KEY = process.env.PROXY_KEY; // optional gate
+const PROXY_KEY = process.env.PROXY_KEY; // optional gate: require X-Proxy-Key header
 const PORT = process.env.PORT || 10000;
 
 // Expose only chosen GET resources
@@ -41,7 +40,8 @@ app.use((req, res, next) => {
   return next();
 });
 
-// Health
+// Root + health
+app.get("/", (_req, res) => res.type("text").send("ok"));
 app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // ---------- Bearer cache ----------
@@ -170,8 +170,17 @@ app.get("/proxy/:resource/:id", async (req, res) => {
   }
 });
 
+// Debug: show whether token can be minted
+app.get("/debug/token", async (_req, res) => {
+  try {
+    const b = await getBearer();
+    res.json({ ok: true, tokenPreview: b ? String(b).slice(0, 12) : null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
 // ---------- Start ----------
 app.listen(PORT, () => {
   console.log(`Proxy listening on :${PORT}`);
 });
-
