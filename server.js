@@ -76,3 +76,61 @@ app.get("/proxy/applicants", async (req, res) => {
     const url = `${API_BASE}/job/applicants`; // fixed path
     const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
     const { data, status, headers: h } = await axios.get(url, {
+      headers,
+      params: req.query,
+      paramsSerializer,
+    });
+    res
+      .status(status)
+      .set("Content-Type", h["content-type"] || "application/json")
+      .send(data);
+  } catch (e) {
+    if (e.response?.status === 401) {
+      try {
+        await login();
+        const url = `${API_BASE}/job/applicants`;
+        const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
+        const { data, status, headers: h } = await axios.get(url, {
+          headers,
+          params: req.query,
+          paramsSerializer,
+        });
+        return res
+          .status(status)
+          .set("Content-Type", h["content-type"] || "application/json")
+          .send(data);
+      } catch (e2) {
+        return res
+          .status(e2.response?.status || 500)
+          .send(e2.response?.data || String(e2));
+      }
+    }
+    res.status(e.response?.status || 500).send(e.response?.data || String(e));
+  }
+});
+
+// Applicants “by id” via OData filter
+app.get("/proxy/applicants/:idNum", async (req, res) => {
+  try {
+    await ensureToken();
+    const idNum = Number(req.params.idNum);
+    if (!Number.isFinite(idNum)) return res.status(400).send("idNum must be a number");
+    const url = `${API_BASE}/job/applicants`; // fixed path
+    const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
+    const params = { $filter: `idNum eq ${idNum}` };
+    const { data, status, headers: h } = await axios.get(url, {
+      headers,
+      params,
+      paramsSerializer,
+    });
+    res
+      .status(status)
+      .set("Content-Type", h["content-type"] || "application/json")
+      .send(data);
+  } catch (e) {
+    res.status(e.response?.status || 500).send(e.response?.data || String(e));
+  }
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`listening on ${port}`));
