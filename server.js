@@ -35,14 +35,10 @@ async function login() {
   );
   token = data.accessToken;
   tokenExp = Date.parse(data.expiresIn || "") || Date.now() + 50 * 60 * 1000; // fallback 50m
-  console.log("Obtained token expiring at", new Date(tokenExp).toISOString());
 }
 
 async function ensureToken() {
-  if (!token || Date.now() > tokenExp - 60_000) {
-    console.log("Refreshing token…");
-    await login();
-  }
+  if (!token || Date.now() > tokenExp - 60_000) await login();
 }
 
 // Keep $ in OData params like $top, $filter.
@@ -69,16 +65,15 @@ app.post("/proxy/accounts", async (_req, res) => {
     await login();
     res.json({ token, tokenExp });
   } catch (e) {
-    console.error("Auth error:", e.response?.data || e.message);
     res.status(e.response?.status || 500).send(e.response?.data || String(e));
   }
 });
 
-// Applicants list
+// Applicants list (forwards OData params like $top, $filter)
 app.get("/proxy/applicants", async (req, res) => {
   try {
     await ensureToken();
-    const url = `${API_BASE}/applicants`; // correct path
+    const url = `${API_BASE}/job/applicants`; // fixed path
     const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
     const { data, status, headers: h } = await axios.get(url, {
       headers,
@@ -90,7 +85,26 @@ app.get("/proxy/applicants", async (req, res) => {
       .set("Content-Type", h["content-type"] || "application/json")
       .send(data);
   } catch (e) {
-    console.error("Applicants error:", e.response?.data || e.message);
+    if (e.response?.status === 401) {
+      try {
+        await login();
+        const url = `${API_BASE}/job/applicants`;
+        const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
+        const { data, status, headers: h } = await axios.get(url, {
+          headers,
+          params: req.query,
+          paramsSerializer,
+        });
+        return res
+          .status(status)
+          .set("Content-Type", h["content-type"] || "application/json")
+          .send(data);
+      } catch (e2) {
+        return res
+          .status(e2.response?.status || 500)
+          .send(e2.response?.data || String(e2));
+      }
+    }
     res.status(e.response?.status || 500).send(e.response?.data || String(e));
   }
 });
@@ -101,7 +115,7 @@ app.get("/proxy/applicants/:idNum", async (req, res) => {
     await ensureToken();
     const idNum = Number(req.params.idNum);
     if (!Number.isFinite(idNum)) return res.status(400).send("idNum must be a number");
-    const url = `${API_BASE}/applicants`;
+    const url = `${API_BASE}/job/applicants`; // fixed path
     const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
     const params = { $filter: `idNum eq ${idNum}` };
     const { data, status, headers: h } = await axios.get(url, {
@@ -114,7 +128,6 @@ app.get("/proxy/applicants/:idNum", async (req, res) => {
       .set("Content-Type", h["content-type"] || "application/json")
       .send(data);
   } catch (e) {
-    console.error("Applicant by id error:", e.response?.data || e.message);
     res.status(e.response?.status || 500).send(e.response?.data || String(e));
   }
 });
