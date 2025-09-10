@@ -69,11 +69,11 @@ app.post("/proxy/accounts", async (_req, res) => {
   }
 });
 
-// Applicants list (forwards OData params like $top, $filter)
-app.get("/proxy/applicants", async (req, res) => {
+// Candidates list (forwards OData params like $top, $filter)
+app.get("/proxy/candidates", async (req, res) => {
   try {
     await ensureToken();
-    const url = `${API_BASE}/job/applicants`; // fixed path
+    const url = `${API_BASE}/candidates`;
     const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
     const { data, status, headers: h } = await axios.get(url, {
       headers,
@@ -88,7 +88,7 @@ app.get("/proxy/applicants", async (req, res) => {
     if (e.response?.status === 401) {
       try {
         await login();
-        const url = `${API_BASE}/job/applicants`;
+        const url = `${API_BASE}/candidates`;
         const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
         const { data, status, headers: h } = await axios.get(url, {
           headers,
@@ -109,15 +109,15 @@ app.get("/proxy/applicants", async (req, res) => {
   }
 });
 
-// Applicants “by id” via OData filter
-app.get("/proxy/applicants/:idNum", async (req, res) => {
+// Candidates by id via OData filter
+app.get("/proxy/candidates/:candidateNum", async (req, res) => {
   try {
     await ensureToken();
-    const idNum = Number(req.params.idNum);
-    if (!Number.isFinite(idNum)) return res.status(400).send("idNum must be a number");
-    const url = `${API_BASE}/job/applicants`; // fixed path
+    const candidateNum = Number(req.params.candidateNum);
+    if (!Number.isFinite(candidateNum)) return res.status(400).send("candidateNum must be a number");
+    const url = `${API_BASE}/candidates`;
     const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
-    const params = { $filter: `idNum eq ${idNum}` };
+    const params = { $filter: `candidateNum eq ${candidateNum}` };
     const { data, status, headers: h } = await axios.get(url, {
       headers,
       params,
