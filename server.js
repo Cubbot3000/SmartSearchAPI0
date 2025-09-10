@@ -69,58 +69,16 @@ app.post("/proxy/accounts", async (_req, res) => {
   }
 });
 
-// Candidates list (forwards OData params like $top, $filter)
-app.get("/proxy/candidates", async (req, res) => {
+// Catch-all for GET requests
+app.get("/proxy/*", async (req, res) => {
   try {
     await ensureToken();
-    const url = `${API_BASE}/candidates`;
+    const subPath = req.params[0]; // everything after /proxy/
+    const url = `${API_BASE}/${subPath}`;
     const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
     const { data, status, headers: h } = await axios.get(url, {
       headers,
       params: req.query,
-      paramsSerializer,
-    });
-    res
-      .status(status)
-      .set("Content-Type", h["content-type"] || "application/json")
-      .send(data);
-  } catch (e) {
-    if (e.response?.status === 401) {
-      try {
-        await login();
-        const url = `${API_BASE}/candidates`;
-        const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
-        const { data, status, headers: h } = await axios.get(url, {
-          headers,
-          params: req.query,
-          paramsSerializer,
-        });
-        return res
-          .status(status)
-          .set("Content-Type", h["content-type"] || "application/json")
-          .send(data);
-      } catch (e2) {
-        return res
-          .status(e2.response?.status || 500)
-          .send(e2.response?.data || String(e2));
-      }
-    }
-    res.status(e.response?.status || 500).send(e.response?.data || String(e));
-  }
-});
-
-// Candidates by id via OData filter
-app.get("/proxy/candidates/:candidateNum", async (req, res) => {
-  try {
-    await ensureToken();
-    const candidateNum = Number(req.params.candidateNum);
-    if (!Number.isFinite(candidateNum)) return res.status(400).send("candidateNum must be a number");
-    const url = `${API_BASE}/candidates`;
-    const headers = acceptHeaders({ Authorization: `Bearer ${token}` });
-    const params = { $filter: `candidateNum eq ${candidateNum}` };
-    const { data, status, headers: h } = await axios.get(url, {
-      headers,
-      params,
       paramsSerializer,
     });
     res
